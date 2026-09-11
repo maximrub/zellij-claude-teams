@@ -24,7 +24,7 @@ Agent panes are named after their role and stack vertically on the right.
 
 ## Requirements
 
-- **Zellij** 0.40+ (tested on 0.43.1)
+- **Zellij** 0.40+ (tested on 0.45.1). Focus-independent pane placement (multi-tab safe) needs 0.44.1+; older versions still work but place panes next to the focused pane.
 - **Bash** 3.2+ (ships with macOS; Linux has 4+)
 - **Claude Code** with Agent Teams support (tested with 2.1.260 and 2.1.268; see [Claude Code notes](#claude-code-notes))
 
@@ -109,7 +109,7 @@ bash install.sh --uninstall
 - **Vertical layout** — the first agent splits right; subsequent agents stack below it automatically
 - **Session isolation** — state is scoped by `ZELLIJ_SESSION_NAME`, so multiple Zellij sessions don't collide
 - **Tab isolation** — agent teams in different tabs within the same session are tracked independently via `.group` files
-- **Focus management** — focus chains through agents during creation, with `move-focus right` ensuring correct placement even if you click back to main between spawns
+- **Focus-independent placement** — panes are created relative to the Claude session that spawned them (`zellij action new-pane --no-focus`), not wherever your focus happens to be, and are renamed by pane id. You can keep working in another tab while a team spawns; nothing lands in the wrong tab and your focus never moves. Needs zellij 0.44.1+ (`new-pane --no-focus`, `rename-pane --pane-id`); older versions fall back to focus-based placement.
 
 ## How It Works
 
@@ -166,9 +166,9 @@ Zellij's `new-pane` does **not** inherit the parent shell's environment (unlike 
 - **Stdout redirect**: The shim must never redirect the command's stdout. Claude Code checks `isatty(stdout)` and exits if it detects a pipe.
 - **Workspace trust**: If you haven't accepted trust for the working directory, Claude Code exits immediately. Run `claude` once in that directory first.
 
-### Agent panes steal focus
+### Agent panes open in the wrong tab or steal focus
 
-Focus chains through agents during creation for correct layout placement. After all agents spawn, click the main pane to return keyboard focus. If you're on an older version, update to the latest.
+On zellij versions without `new-pane --no-focus`, the shim can only open panes next to the *focused* pane, so switching tabs while a team spawns puts the pane in the tab you're looking at, and focus chains through the new panes. Upgrade zellij; with `--no-focus` support the shim places panes relative to the spawning session and never moves focus.
 
 ### Environment variables missing in panes
 
