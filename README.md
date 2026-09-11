@@ -24,19 +24,23 @@ Agent panes are named after their role and stack vertically on the right.
 
 ## Requirements
 
-- **Zellij** 0.40+ (tested on 0.43.1)
-- **Bash** 3.2+ (ships with macOS; Linux has 4+)
-- **Claude Code** with Agent Teams support
+- **Zellij** 0.40+ (tested on 0.45.1). Focus-independent pane placement (multi-tab safe) needs 0.44.1+; older versions still work but place panes next to the focused pane.
+- **Bash** 3.2+ (ships with macOS; Linux has 4+) — the shim itself is bash, even if your shell is zsh or fish
+- **Claude Code** with Agent Teams support (tested with 2.1.260 and 2.1.268; see [Claude Code notes](#claude-code-notes))
 
 ## Installation
 
+> **This is the `next` branch (the default) of the [maximrub fork](https://github.com/maximrub/zellij-claude-teams).** It bundles three pull requests that are still open upstream: fish shell support ([#7](https://github.com/stanislc/zellij-claude-teams/pull/7)), the fix for Claude Code ≥ 2.1.2xx, without which teammate panes open but stay blank ([#8](https://github.com/stanislc/zellij-claude-teams/pull/8)), and multi-tab-safe pane placement ([#9](https://github.com/stanislc/zellij-claude-teams/pull/9)).
+
 ```bash
-git clone https://github.com/stanislc/zellij-claude-teams.git
+git clone https://github.com/maximrub/zellij-claude-teams.git
 cd zellij-claude-teams
-bash install.sh
+bash install.sh          # fish: fish install.fish
 ```
 
 The install script copies files to `${XDG_DATA_HOME:-~/.local/share}/zellij-tmux-shim/` and prints the activation snippet for your shell.
+
+**Fish users: run `fish install.fish` instead.** It runs `install.sh` for you and also installs the `claude-zellij` function, so there is nothing to copy by hand — see [Fish](#fish).
 
 ### Shell activation
 
@@ -60,7 +64,46 @@ if [[ -n "$ZELLIJ" ]]; then
 fi
 ```
 
+**Fish**: see [Fish](#fish) below — the recommended setup is an on-demand function, not a startup snippet.
+
 Then restart your shell inside Zellij.
+
+### Fish
+
+**Recommended: the `claude-zellij` function (on demand).** Activating the shim sets a fake `$TMUX` and shadows `tmux` on `PATH` for the whole shell, which can confuse other tools that check for tmux (fzf, vim plugins, ...). Fish makes it easy to avoid that: install the autoloaded function and nothing runs at shell startup.
+
+```fish
+fish install.fish        # installs the shim and the function
+```
+
+It puts the function in `$__fish_config_dir/functions/` (normally `~/.config/fish/functions/`), where fish autoloads it on first use. Re-run it to update and `fish install.fish --uninstall` to remove both.
+
+Use it in place of `claude`. Outside Zellij it runs the real binary untouched. Inside Zellij it activates the shim in a child process and execs `claude` with your arguments, `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` (Claude Code gates agent teams behind that variable) and `--teammate-mode tmux` (since Claude Code 2.1.179 the default is `in-process`, which never calls tmux; your own arguments come last and override it). Your interactive shell never sees the fake `$TMUX` or the teams flag, and there is nothing to deactivate afterwards:
+
+```fish
+claude-zellij                 # teammates spawn as Zellij panes
+claude-zellij --resume        # arguments pass straight through
+```
+
+The project deliberately doesn't shadow `claude`. If you want that, it's one line in your own `config.fish`: `alias claude=claude-zellij`.
+
+**Alternative: always-on, like bash/zsh.** If you'd rather have every Zellij shell activated (and set the teams variable and `teammateMode` yourself), add this to `~/.config/fish/config.fish` and restart your shell inside Zellij:
+
+```fish
+if test -n "$ZELLIJ"
+    set -l _shim $XDG_DATA_HOME
+    test -n "$_shim"; or set _shim $HOME/.local/share
+    set _shim $_shim/zellij-tmux-shim/activate.fish
+    test -f $_shim; and source $_shim
+end
+```
+
+Undo it for the current shell with `source ~/.local/share/zellij-tmux-shim/deactivate.fish`. Bash and zsh users can get similar opt-in behaviour by sourcing `activate.sh` manually instead of adding the startup snippet.
+### Claude Code notes
+
+- **Agent teams are gated.** Set `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` in the environment or add it under `"env"` in `~/.claude/settings.json`.
+- **Since Claude Code 2.1.179 teammates run in-process by default** and never touch tmux, so nothing appears in Zellij even with the shim active. Set `"teammateMode": "tmux"` (or `"auto"`) in `~/.claude/settings.json`, or start Claude with `claude --teammate-mode tmux`.
+- **Claude Code ≥ 2.1.2xx changed the spawn protocol**: the pane is created with a placeholder (`split-window … -- cat`), titled with `select-pane -T`, and the teammate is launched with `respawn-pane -k`. The shim supports this as well as the older `split-window` + `send-keys` sequence.
 
 ### Workspace trust (one-time)
 
@@ -80,8 +123,31 @@ The shim activates automatically when you're inside Zellij (it checks for the `$
 ### Deactivation
 
 ```bash
-source ~/.local/share/zellij-tmux-shim/deactivate.sh
+source ~/.local/share/zellij-tmux-shim/deactivate.sh      # bash / zsh
+source ~/.local/share/zellij-tmux-shim/deactivate.fish    # fish (only if you used the startup snippet)
 ```
+
+### Updating
+
+The clone is used only by the installers: everything is copied into
+`${XDG_DATA_HOME:-~/.local/share}/zellij-tmux-shim/`, and nothing reads the repository while
+Claude Code runs. To pick up a new version, pull and re-run the same installer you used:
+
+```bash
+cd zellij-claude-teams
+git pull
+bash install.sh            # fish: fish install.fish
+```
+
+`fish install.fish` refreshes the `claude-zellij` function as well, which `install.sh` cannot
+do — it never writes outside the install directory. If you copied that function in by hand
+(before `install.fish` existed), re-run `fish install.fish` once and it takes over.
+
+The activation snippet in your shell config points at the install directory, so it never needs
+changing. `claude-zellij` picks up the new shim on its next run; with the always-on snippet,
+restart your shell inside Zellij instead. If an update ever renames or removes a file, the
+installer copies over the top rather than cleaning, so uninstalling and reinstalling gives you
+a fresh directory.
 
 ### Uninstall
 
@@ -90,6 +156,15 @@ cd zellij-claude-teams
 bash install.sh --uninstall
 # Then remove the activation snippet from your shell config
 ```
+
+Fish, if you installed with `install.fish`:
+
+```fish
+cd zellij-claude-teams
+fish install.fish --uninstall    # removes the shim and the claude-zellij function
+```
+
+It deletes `claude-zellij.fish` outright, the same way installing overwrites it, so keep a copy elsewhere if you have edited it. There is no snippet to remove unless you chose the always-on one.
 
 ## Configuration
 
@@ -103,7 +178,7 @@ bash install.sh --uninstall
 - **Vertical layout** — the first agent splits right; subsequent agents stack below it automatically
 - **Session isolation** — state is scoped by `ZELLIJ_SESSION_NAME`, so multiple Zellij sessions don't collide
 - **Tab isolation** — agent teams in different tabs within the same session are tracked independently via `.group` files
-- **Focus management** — focus chains through agents during creation, with `move-focus right` ensuring correct placement even if you click back to main between spawns
+- **Focus-independent placement** — panes are created relative to the Claude session that spawned them (`zellij action new-pane --no-focus`), not wherever your focus happens to be, and are renamed by pane id. You can keep working in another tab while a team spawns; nothing lands in the wrong tab and your focus never moves. Needs zellij 0.44.1+ (`new-pane --no-focus`, `rename-pane --pane-id`); older versions fall back to focus-based placement.
 
 ## How It Works
 
@@ -113,15 +188,19 @@ The shim uses a **FIFO-per-pane** architecture:
 Claude Code                    Shim (bin/tmux)                 Zellij
 ───────────                    ───────────────                 ──────
 tmux split-window -h ───────→  alloc pane ID (%1)
-                               snapshot parent env
-                               zellij new-pane ──────────────→ creates pane
+  (… -- cat placeholder         snapshot parent env
+   is ignored)                  zellij new-pane ──────────────→ creates pane
                                wait for .ready sentinel        ↓
                                                                wrapper starts
                                                                creates FIFO
                                                                touches .ready
                                ← returns %1
 
-tmux send-keys -t %1 "cmd" ─→ write "cmd" to FIFO
+tmux select-pane -t %1 -T name → record title for the wrapper
+
+tmux send-keys -t %1 "cmd"  ─→ write "cmd" to FIFO
+  or
+tmux respawn-pane -k -t %1 -- "cmd"
                                                                wrapper reads FIFO
                                                                rename-pane (locks title)
                                                                touch .named sentinel
@@ -156,9 +235,9 @@ Zellij's `new-pane` does **not** inherit the parent shell's environment (unlike 
 - **Stdout redirect**: The shim must never redirect the command's stdout. Claude Code checks `isatty(stdout)` and exits if it detects a pipe.
 - **Workspace trust**: If you haven't accepted trust for the working directory, Claude Code exits immediately. Run `claude` once in that directory first.
 
-### Agent panes steal focus
+### Agent panes open in the wrong tab or steal focus
 
-Focus chains through agents during creation for correct layout placement. After all agents spawn, click the main pane to return keyboard focus. If you're on an older version, update to the latest.
+On zellij versions without `new-pane --no-focus`, the shim can only open panes next to the *focused* pane, so switching tabs while a team spawns puts the pane in the tab you're looking at, and focus chains through the new panes. Upgrade zellij; with `--no-focus` support the shim places panes relative to the spawning session and never moves focus.
 
 ### Environment variables missing in panes
 
@@ -176,7 +255,7 @@ cat "${ZELLIJ_TMUX_SHIM_STATE}/shim.log"
 
 - **No pane resizing** — Zellij manages layout automatically; tmux layout commands are no-ops
 - **Fragile to Claude Code updates** — new tmux commands added upstream may need shim updates. Debug logging captures unhandled commands for diagnosis.
-- **No Fish shell support** — Fish cannot source bash scripts. Use [bass](https://github.com/edc/bass) or contribute a `activate.fish`.
+- **No real respawn** — `respawn-pane` is only supported for a pane still waiting for its first command (which is how Claude Code uses it). Respawning a pane that is already running a command returns an error instead of pretending to succeed.
 
 ## Compatibility
 
