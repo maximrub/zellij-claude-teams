@@ -26,7 +26,7 @@ Agent panes are named after their role and stack vertically on the right.
 
 - **Zellij** 0.40+ (tested on 0.43.1)
 - **Bash** 3.2+ (ships with macOS; Linux has 4+)
-- **Claude Code** with Agent Teams support
+- **Claude Code** with Agent Teams support (tested with 2.1.260 and 2.1.268; see [Claude Code notes](#claude-code-notes))
 
 ## Installation
 
@@ -61,6 +61,12 @@ fi
 ```
 
 Then restart your shell inside Zellij.
+
+### Claude Code notes
+
+- **Agent teams are gated.** Set `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` in the environment or add it under `"env"` in `~/.claude/settings.json`.
+- **Since Claude Code 2.1.179 teammates run in-process by default** and never touch tmux, so nothing appears in Zellij even with the shim active. Set `"teammateMode": "tmux"` (or `"auto"`) in `~/.claude/settings.json`, or start Claude with `claude --teammate-mode tmux`.
+- **Claude Code ≥ 2.1.2xx changed the spawn protocol**: the pane is created with a placeholder (`split-window … -- cat`), titled with `select-pane -T`, and the teammate is launched with `respawn-pane -k`. The shim supports this as well as the older `split-window` + `send-keys` sequence.
 
 ### Workspace trust (one-time)
 
@@ -113,15 +119,19 @@ The shim uses a **FIFO-per-pane** architecture:
 Claude Code                    Shim (bin/tmux)                 Zellij
 ───────────                    ───────────────                 ──────
 tmux split-window -h ───────→  alloc pane ID (%1)
-                               snapshot parent env
-                               zellij new-pane ──────────────→ creates pane
+  (… -- cat placeholder         snapshot parent env
+   is ignored)                  zellij new-pane ──────────────→ creates pane
                                wait for .ready sentinel        ↓
                                                                wrapper starts
                                                                creates FIFO
                                                                touches .ready
                                ← returns %1
 
-tmux send-keys -t %1 "cmd" ─→ write "cmd" to FIFO
+tmux select-pane -t %1 -T name → record title for the wrapper
+
+tmux send-keys -t %1 "cmd"  ─→ write "cmd" to FIFO
+  or
+tmux respawn-pane -k -t %1 -- "cmd"
                                                                wrapper reads FIFO
                                                                rename-pane (locks title)
                                                                touch .named sentinel
@@ -176,6 +186,7 @@ cat "${ZELLIJ_TMUX_SHIM_STATE}/shim.log"
 
 - **No pane resizing** — Zellij manages layout automatically; tmux layout commands are no-ops
 - **Fragile to Claude Code updates** — new tmux commands added upstream may need shim updates. Debug logging captures unhandled commands for diagnosis.
+- **No real respawn** — `respawn-pane` is only supported for a pane still waiting for its first command (which is how Claude Code uses it). Respawning a pane that is already running a command returns an error instead of pretending to succeed.
 - **No Fish shell support** — Fish cannot source bash scripts. Use [bass](https://github.com/edc/bass) or contribute a `activate.fish`.
 
 ## Compatibility

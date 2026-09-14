@@ -299,6 +299,15 @@ split-window)
         esac
     done
 
+    # Claude Code >= 2.1.2xx creates the pane with a placeholder command
+    # (`split-window ... -- cat`) and later replaces it via `respawn-pane -k`.
+    # Don't run the placeholder — keep the wrapper waiting on its FIFO so the
+    # respawn-pane handler can deliver the real command.
+    if [ ${#sw_command[@]} -eq 1 ] && [ "${sw_command[0]}" = "cat" ]; then
+        log_debug "split-window: ignoring placeholder command 'cat' (respawn-pane will deliver the real one)"
+        sw_command=()
+    fi
+
     # Allocate a synthetic pane ID
     NEW_PANE_ID=$(alloc_pane_id) || { log_debug "split-window: alloc failed"; exit 1; }
     PANE_KEY="${NEW_PANE_ID#%}"
@@ -441,6 +450,93 @@ send-keys)
     exit 0
     ;;
 
+# --- respawn-pane ---
+# Claude Code >= 2.1.2xx launches the teammate with
+#   respawn-pane -k -t %N -- '<shell command>'
+# after creating the pane with a placeholder. tmux runs the command via
+# `sh -c`, so it's delivered to the wrapper as raw shell text (like send-keys),
+# not %q-escaped argv.
+respawn-pane)
+    rp_target=""
+    rp_command=()
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -t) rp_target="${2:-}"; shift 2 || shift ;;
+            -c) shift 2 || shift ;;
+            -k) shift ;;
+            -e) shift 2 || shift ;;
+            --)
+                shift
+                rp_command=("$@")
+                break
+                ;;
+            -*) shift ;;
+            *)
+                rp_command=("$@")
+                break
+                ;;
+        esac
+    done
+
+    if [ -z "$rp_target" ]; then
+        log_debug "respawn-pane: no target specified, ignoring"
+        exit 0
+    fi
+
+    PANE_KEY="${rp_target#%}"
+    validate_pane_key "$PANE_KEY" || { log_debug "respawn-pane: invalid pane key"; exit 1; }
+
+    if [ ${#rp_command[@]} -eq 0 ]; then
+        log_debug "respawn-pane: no command for ${rp_target}, ignoring"
+        exit 0
+    fi
+
+    FIFO_PATH="${STATE_DIR}/${PANE_KEY}.fifo"
+    COMMAND_TEXT="${rp_command[*]}"
+    log_debug "respawn-pane: target=${rp_target} command='${COMMAND_TEXT}'"
+
+    if [ -p "$FIFO_PATH" ]; then
+        # Wrapper is still waiting on the FIFO (placeholder was never run)
+        echo "$COMMAND_TEXT" > "$FIFO_PATH"
+        log_debug "respawn-pane: delivered to FIFO"
+        wait_for_named "$PANE_KEY"
+        exit 0
+    fi
+
+    # The wrapper already exec'd a command. A real respawn would need a new
+    # pane; we don't support that, and we must not pretend we did — Claude Code
+    # surfaces a non-zero exit as "Failed to send command to pane".
+    log_debug "respawn-pane: FIFO gone for ${rp_target}, cannot respawn a running pane"
+    echo "zellij-tmux-shim: respawn-pane: pane ${rp_target} is already running a command" >&2
+    exit 1
+    ;;
+
+# --- select-pane ---
+# `select-pane -t %N -T <title>` sets the pane title. The wrapper renames the
+# zellij pane when it receives its command (that locks the title); record the
+# title so the wrapper can use it if the command carries no --agent-name.
+# Plain focus changes (select-pane -t %N) are no-ops: zellij manages focus.
+select-pane)
+    sp_target=""
+    sp_title=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -t) sp_target="${2:-}"; shift 2 || shift ;;
+            -T) sp_title="${2:-}"; shift 2 || shift ;;
+            *) shift ;;
+        esac
+    done
+    if [ -n "$sp_target" ] && [ -n "$sp_title" ]; then
+        PANE_KEY="${sp_target#%}"
+        validate_pane_key "$PANE_KEY" || { log_debug "select-pane: invalid pane key"; exit 1; }
+        printf '%s\n' "$sp_title" > "${STATE_DIR}/${PANE_KEY}.title"
+        log_debug "select-pane: recorded title '${sp_title}' for ${sp_target}"
+    else
+        log_debug "no-op: select-pane $*"
+    fi
+    exit 0
+    ;;
+
 # --- kill-pane ---
 kill-pane)
     kp_target=""
@@ -479,6 +575,7 @@ kill-pane)
     rm -f "${STATE_DIR}/${PANE_KEY}.ready"
     rm -f "${STATE_DIR}/${PANE_KEY}.group"
     rm -f "${STATE_DIR}/${PANE_KEY}.named"
+    rm -f "${STATE_DIR}/${PANE_KEY}.title"
 
     exit 0
     ;;
@@ -590,6 +687,12 @@ new-window)
         esac
     done
 
+    # Same placeholder handling as split-window (see there)
+    if [ ${#nw_command[@]} -eq 1 ] && [ "${nw_command[0]}" = "cat" ]; then
+        log_debug "new-window: ignoring placeholder command 'cat' (respawn-pane will deliver the real one)"
+        nw_command=()
+    fi
+
     # Allocate pane ID
     NEW_PANE_ID=$(alloc_pane_id) || { log_debug "new-window: alloc failed"; exit 1; }
     PANE_KEY="${NEW_PANE_ID#%}"
@@ -647,7 +750,7 @@ list-windows)
     ;;
 
 # --- No-op commands ---
-select-layout|resize-pane|select-pane|set-option|break-pane|join-pane|set|setw|set-window-option|bind-key|unbind-key|source-file|rename-session|rename-window|move-window|swap-pane|swap-window|pipe-pane|capture-pane|save-buffer|delete-buffer|wait-for|refresh-client)
+select-layout|resize-pane|set-option|break-pane|join-pane|set|setw|set-window-option|bind-key|unbind-key|source-file|rename-session|rename-window|move-window|swap-pane|swap-window|pipe-pane|capture-pane|save-buffer|delete-buffer|wait-for|refresh-client)
     log_debug "no-op: $CMD $*"
     exit 0
     ;;
